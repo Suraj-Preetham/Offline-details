@@ -1,0 +1,148 @@
+
+WITH cte_class AS (
+    SELECT
+        -- batch details
+        bb."name" AS Batch_Name,
+        CASE
+            WHEN bb.starts_at + interval '330 minutes' <= CURRENT_DATE AND bb.completed_at + interval '330 minutes' >= CURRENT_DATE THEN 'Ongoing Batch Course'
+            WHEN bb.starts_at + interval '330 minutes' <= CURRENT_DATE AND bb.completed_at + interval '330 minutes' < CURRENT_DATE THEN 'Finished Batch Course'
+            WHEN bb.starts_at + interval '330 minutes' > CURRENT_DATE THEN 'Upcoming Batch Course'
+            ELSE ''
+        END AS batch_status,
+        bb.starts_at + interval '330 minutes' AS [Batch_Start_Date],
+        bb.completed_at + interval '330 minutes' AS [Batch_End_Date],
+        bb.uid AS [Batch_UID],
+        bb.topology_id AS batch_topology_id,
+        tt.name AS topology_name,
+        -- collection details
+        cc."name" AS course_name,     
+        cc.uid AS course_uid,
+        -- class details
+        pp.title AS class_title,
+        pp.uid AS class_uid,
+        pp.id AS class_id,
+        CONCAT('https://unacademy.com/class/KK/', pp.uid) AS class_url,
+        ul.id AS live_class_id,
+        ul.started_at + interval '330 minutes' AS live_class_started_at,
+        ul.live_at + interval '330 minutes' AS class_scheduled_at,
+        ul.started_at + interval '330 minutes' AS class_start_at,
+        ul.finished_at + interval '330 minutes' AS class_finished_at,
+        -- centre and city details
+        oco.uid AS centre_uid,
+        oco.name AS classroom_number,
+        oco2.name AS centre,
+        oco2.uid AS city_uid,
+        ic.name AS city,
+        -- educator details
+        au.id AS educator_id,
+        au.first_name + ' ' + au.last_name AS Educator_Name,
+        au.username AS Educator_Username,
+        -- business category
+        bclgm.business_category_name AS Business_Category,
+        ul.duration AS scheduled_duration,
+        tg.topic_group_name,
+        datediff(minute, ul.started_at, ul.finished_at) AS actual_class_duration,
+        CASE
+            WHEN ul.started_at IS NULL AND class_scheduled_at < getdate() THEN 'Class Cancelled'
+            WHEN class_scheduled_at > getdate() THEN 'Class Scheduled'
+            WHEN ul.started_at IS NOT NULL THEN 'Class Conducted'
+        END AS class_flag,
+        CASE
+            WHEN ui.ta_user_uid IS NOT NULL THEN 'TA Class'
+            ELSE 'NO TA Assigned'
+        END AS TA_flag,
+        -- course_starts and end and at
+        min(ul.live_at) + interval '330 minutes' AS course_started_at,
+        max(ul.live_at) + interval '330 minutes' AS course_ended_at,
+        COALESCE(count(DISTINCT q.id), 0) AS number_of_doubts_asked,
+        COALESCE(count(DISTINCT CASE WHEN q.is_answered = 1 THEN q.id END), 0) AS number_of_doubts_solved
+    FROM uplus_itemofflineroomrelationship ui
+    LEFT JOIN offline_centres_offlineroom oco ON UI.offline_room_uid = OCO.uid
+    LEFT JOIN offline_centres_offlinecentre oco2 ON oco.centre_id = oco2.id
+    LEFT JOIN offline_centres_offlinecity city ON oco2.offline_city_uid = city.uid
+    LEFT JOIN internationalization_city ic ON city.city_uid = ic.uid
+    LEFT JOIN posts_post pp ON ui.object_id = pp.live_class_id
+    LEFT JOIN collection_item ci ON pp.id = ci.object_id
+    LEFT JOIN collection_collection cc ON cc.id = ci.collection_id
+    LEFT JOIN batch_batchitem bi ON bi.collection_id = cc.id
+    LEFT JOIN batch_batch bb ON bb.id = bi.batch_id
+    LEFT JOIN uplus_liveclass ul ON pp.live_class_id = ul.id
+    LEFT JOIN uplus_programme up ON ul.programme_id = up.id
+    LEFT JOIN topology_topology tt ON tt.id = up.topology_id
+    LEFT JOIN auth_user au ON au.id = pp.user_id
+    LEFT JOIN sandbox_analytics.business_category_leader_goal_mapping bclgm ON bclgm.goal_id = bb.topology_id
+    LEFT JOIN sandbox_analytics.class_tg_mapping tg ON pp.uid = tg.class_uid
+    LEFT JOIN qnas q ON pp.uid = q.room
+    WHERE ui.is_active = 1
+    GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32
+),
+cte_class_watched AS (
+    SELECT pp.uid AS class_uid,
+    COUNT(DISTINCT pva.user_id) AS online_learners,
+    COUNT(DISTINCT CASE WHEN pva.is_live = 1 THEN pva.user_id END) AS live_learners
+    FROM uplus_itemofflineroomrelationship ui
+    LEFT JOIN uplus_liveclass ul ON ui.object_id = ul.id
+    LEFT JOIN posts_post pp ON pp.live_class_id = ul.id
+    LEFT JOIN production_video_analytics pva ON pva.video_id = pp.uid
+    LEFT JOIN sandbox_analytics.tbl_daily_learner tdl ON pva.user_id = tdl.learner_uid AND tdl.individual_subscription_type <> 'Offline'
+    LEFT JOIN users_userprofile uu ON pva.user_id = uu.uid
+    LEFT JOIN auth_user au ON uu.user_id = au.id
+    WHERE ui.is_active = 1 AND tdl.learner_uid IS NOT NULL AND au.email NOT LIKE ('%unacademy.com')
+    GROUP BY 1
+),
+cte_learners AS (
+    SELECT a.*,
+    COALESCE(b.online_learners, 0) AS online_learners,
+    COALESCE(b.live_learners, 0) AS live_learners
+    FROM cte_class a
+    LEFT JOIN cte_class_watched b ON a.class_uid = b.class_uid
+)
+SELECT
+    Batch_Name, batch_status, Batch_Start_Date, Batch_End_Date, Batch_UID, batch_topology_id, topology_name, course_name, course_uid,
+    class_title, class_uid, class_id, class_url, live_class_id, live_class_started_at, class_scheduled_at, class_start_at, class_finished_at,
+    centre_uid, classroom_number, centre, city_uid, city, educator_id, Educator_Name, Educator_Username, Business_Category, scheduled_duration,
+    actual_class_duration, class_flag, TA_flag, course_started_at, course_ended_at, number_of_doubts_asked, number_of_doubts_solved,
+    online_learners, live_learners,
+    LISTAGG(topic_group_name, '|') WITHIN GROUP (ORDER BY topic_group_name) AS topic_group_name
+FROM cte_learners
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37
+
+
+
+
+select * from uplus_itemofflineroomrelationship ui limit 10 
+
+select * from offline_centres_offlineroom oco limit 10 
+
+select oco2."name", city.uid, oco2.address 
+from offline_centres_offlinecentre oco2 
+left join offline_centres_offlinecity city on oco2.offline_city_uid = city.uid 
+group by 1,2,3 
+
+
+
+
+    FROM uplus_itemofflineroomrelationship ui
+    LEFT JOIN offline_centres_offlineroom oco ON UI.offline_room_uid = OCO.uid
+    LEFT JOIN offline_centres_offlinecentre oco2 ON oco.centre_id = oco2.id
+    LEFT JOIN offline_centres_offlinecity city ON oco2.offline_city_uid = city.uid
+    LEFT JOIN internationalization_city ic ON city.city_uid = ic.uid
+    LEFT JOIN posts_post pp ON ui.object_id = pp.live_class_id
+    LEFT JOIN collection_item ci ON pp.id = ci.object_id
+    LEFT JOIN collection_collection cc ON cc.id = ci.collection_id
+    LEFT JOIN batch_batchitem bi ON bi.collection_id = cc.id
+    LEFT JOIN batch_batch bb ON bb.id = bi.batch_id
+    LEFT JOIN uplus_liveclass ul ON pp.live_class_id = ul.id
+    LEFT JOIN uplus_programme up ON ul.programme_id = up.id
+    LEFT JOIN topology_topology tt ON tt.id = up.topology_id
+    LEFT JOIN auth_user au ON au.id = pp.user_id
+    LEFT JOIN sandbox_analytics.business_category_leader_goal_mapping bclgm ON bclgm.goal_id = bb.topology_id
+    LEFT JOIN sandbox_analytics.class_tg_mapping tg ON pp.uid = tg.class_uid
+    LEFT JOIN qnas q ON pp.uid = q.room
+    WHERE ui.is_active = 1
+    
+    
+    -- Class wise conversions from Apr to September 
+
+ 
+
